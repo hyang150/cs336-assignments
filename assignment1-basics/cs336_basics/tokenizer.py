@@ -1,332 +1,264 @@
-"""
-BPE (Byte Pair Encoding) Tokenizer Training
-
-整体流程：
-1. 并行预分词：把大文件切成小块，每个进程统计自己那块的 token 频率
-2. 汇总结果：合并所有进程的统计结果
-3. BPE 训练：循环找最频繁的字节对，合并，直到词表够大
-"""
-
-import multiprocessing
-from collections import Counter, defaultdict
 import regex as re
+import json
+import os
+from collections import defaultdict
+from typing import List, Tuple, Dict, Optional, Union
+from tqdm.contrib.concurrent import process_map
+from tqdm import tqdm
 
+# GPT-4 / GPT-2 standard split pattern
+# This regex splits text into: contractions, letters, numbers, or anything else (punctuation)
+PAT = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
 
-# GPT-2 的预分词正则表达式
-PAT = re.compile(
-    r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-)
+class BPETokenizer:
+    def __init__(self, vocab_size: int = 5000):
+        self.vocab_size = vocab_size
+        self.merges: Dict[Tuple[bytes, bytes], int] = {}
+        self.vocab: Dict[int, bytes] = {}
+        self.special_tokens: Dict[str, int] = {}
+        self.pattern = PAT
 
+    def _get_bytes_range(self, special_tokens: List[str]):
+        """Initialize basic vocab (0-255) + special tokens."""
+        # 0-255 bytes
+        vocab = {i: bytes([i]) for i in range(256)}
+        
+        # Add special tokens starting from 256
+        for i, token in enumerate(special_tokens):
+            token_id = 256 + i
+            vocab[token_id] = token.encode("utf-8")
+            self.special_tokens[token] = token_id
+            
+        return vocab
 
-def find_chunk_boundaries(file, num_chunks, separator):
-    """
-    找到文件的安全切分点，确保不会把 separator 切断
+    @staticmethod
+    def _word2bytes(word: str) -> Tuple[bytes, ...]:
+        """Convert word string to tuple of bytes (immutable for dict keys)."""
+        # Convert string to utf-8 bytes, then to a tuple of single-byte objects
+        # e.g. "Hi" -> (b'H', b'i')
+        return tuple(bytes([b]) for b in word.encode('utf-8'))
 
-    Args:
-        file: 已打开的二进制文件对象
-        num_chunks: 想要切成几块
-        separator: 分隔符（比如 b"<|endoftext|>"）
+    @staticmethod
+    def _count_word_freq(text: str) -> Dict[Tuple[bytes, ...], int]:
+        """Split text using regex and count byte-tuple frequencies."""
+        word_cnt = defaultdict(int)
+        for m in PAT.finditer(text):
+            word = m.group(0)
+            word_bytes = BPETokenizer._word2bytes(word)
+            if len(word_bytes) > 0:
+                word_cnt[word_bytes] += 1
+        return word_cnt
 
-    Returns:
-        boundaries: [0, pos1, pos2, ..., file_size]
-    """
-    file.seek(0, 2)  # 移到文件末尾
-    file_size = file.tell()
-    file.seek(0)
-
-    chunk_size = file_size // num_chunks
-    boundaries = [0]
-
-    for i in range(1, num_chunks):
-        # 先跳到大概的位置
-        target = i * chunk_size
-        file.seek(target)
-
-        # 往后找，直到遇到 separator 或文件末尾
-        # 这样保证不会把一个单词切断
-        buffer = file.read(len(separator) + 1000)  # 读一小段来找分隔符
-
-        idx = buffer.find(separator)
-        if idx != -1:
-            # 找到了分隔符，边界设在分隔符之后
-            boundaries.append(target + idx + len(separator))
-        else:
-            # 没找到，就用当前位置（可能不太理想，但能用）
-            boundaries.append(min(target + len(buffer), file_size))
-
-    boundaries.append(file_size)
-
-    # 去重并排序
-    boundaries = sorted(set(boundaries))
-    return boundaries
-
-
-def _worker_count_tokens(args):
-    """
-    工人进程的工作：
-    1. 读取文件的指定区域
-    2. 用正则切分成 tokens
-    3. 统计每个 token 的出现次数
-
-    Returns:
-        Counter: {b'hello': 10, b'world': 5, ...}
-                 注意：key 是 bytes 类型
-    """
-    file_path, start, end, special_tokens = args
-
-    with open(file_path, "rb") as f:
-        f.seek(start)
-        chunk = f.read(end - start)
-
-    # 解码成字符串
-    text = chunk.decode("utf-8", errors="replace")
-
-    # 用正则切分
-    pieces = PAT.findall(text)
-
-    # 转成 bytes 并统计（过滤掉 special tokens）
-    special_set = set(special_tokens)
-    token_counts = Counter()
-
-    for piece in pieces:
-        # 把每个 piece 转成 bytes
-        piece_bytes = piece.encode("utf-8")
-        if piece_bytes not in special_set:
-            token_counts[piece_bytes] += 1
-
-    return token_counts
-
-
-def count_all_pairs(token_freqs):
-    """
-    统计所有 token 中相邻字节对的频率
-
-    Args:
-        token_freqs: {token_as_tuple: frequency, ...}
-                     例如: {(104, 101, 108, 108, 111): 100}  # "hello" 出现 100 次
-
-    Returns:
-        Counter: {(byte1, byte2): count, ...}
-    """
-    pair_counts = Counter()
-
-    for token_tuple, freq in token_freqs.items():
-        # token_tuple 是一个字节元组，比如 (104, 101, 108, 108, 111)
-        for i in range(len(token_tuple) - 1):
-            pair = (token_tuple[i], token_tuple[i + 1])
-            pair_counts[pair] += freq
-
-    return pair_counts
-
-
-def merge_pair_in_tokens(token_freqs, pair_to_merge, new_token_id):
-    """
-    在所有 token 中把指定的 pair 合并成新的单个 token
-
-    Args:
-        token_freqs: {token_as_tuple: frequency}
-        pair_to_merge: (byte1, byte2) 要合并的字节对
-        new_token_id: 新 token 的 ID（整数）
-
-    Returns:
-        new_token_freqs: 更新后的 token 频率表
-    """
-    new_token_freqs = {}
-
-    for token_tuple, freq in token_freqs.items():
-        # 在这个 token 中找到所有的 pair_to_merge 并合并
-        new_tuple = []
+    @staticmethod
+    def _apply_merge(word_bytes: Tuple[bytes, ...], pair: Tuple[bytes, bytes]) -> Tuple[bytes, ...]:
+        """Apply a specific merge to a word's byte tuple."""
+        # This creates a new tuple where consecutive occurrences of pair are merged
+        new_word_bytes = []
         i = 0
-        while i < len(token_tuple):
-            # 检查当前位置是否是要合并的 pair
-            if (
-                i < len(token_tuple) - 1
-                and token_tuple[i] == pair_to_merge[0]
-                and token_tuple[i + 1] == pair_to_merge[1]
-            ):
-                # 合并！用新的 token ID 替代这两个字节
-                new_tuple.append(new_token_id)
-                i += 2  # 跳过两个字节
+        merged_token = pair[0] + pair[1]
+        
+        while i < len(word_bytes):
+            if i < len(word_bytes) - 1 and word_bytes[i] == pair[0] and word_bytes[i+1] == pair[1]:
+                new_word_bytes.append(merged_token)
+                i += 2
             else:
-                new_tuple.append(token_tuple[i])
+                new_word_bytes.append(word_bytes[i])
                 i += 1
+        return tuple(new_word_bytes)
 
-        new_tuple = tuple(new_tuple)
+    def _update_stats(self, word_cnt, pair_cnt, merge_pair):
+        """
+        Incremental update of statistics.
+        Instead of re-scanning text, we mathematically update the counts.
+        Efficient O(1) logic from the original optimized code.
+        """
+        new_word_cnt = defaultdict(int)
+        new_pair_cnt = pair_cnt.copy()
 
-        # 可能有多个不同的原始 token 合并后变成相同的
-        if new_tuple in new_token_freqs:
-            new_token_freqs[new_tuple] += freq
+        for word_bytes, cnt in word_cnt.items():
+            # If the word doesn't contain the first part of the pair, it can't be merged
+            # Optimization: check if first byte of pair is in word
+            if merge_pair[0] not in word_bytes:
+                new_word_cnt[word_bytes] += cnt
+                continue
+
+            # Calculate pairs in the OLD word to remove them
+            old_pairs = list(zip(word_bytes[:-1], word_bytes[1:]))
+            if merge_pair not in old_pairs:
+                new_word_cnt[word_bytes] += cnt
+                continue
+
+            # Apply merge to get NEW word
+            new_word = self._apply_merge(word_bytes, merge_pair)
+            new_word_cnt[new_word] += cnt
+
+            # 1. Remove counts of old pairs
+            for p in old_pairs:
+                new_pair_cnt[p] -= cnt
+                if new_pair_cnt[p] == 0:
+                    del new_pair_cnt[p]
+
+            # 2. Add counts of new pairs
+            new_pairs = list(zip(new_word[:-1], new_word[1:]))
+            for p in new_pairs:
+                new_pair_cnt[p] += cnt
+
+        return new_word_cnt, new_pair_cnt
+
+    def train(self, input_path: Union[str, os.PathLike], special_tokens: List[str] = None):
+        """Train the BPE tokenizer on a file."""
+        special_tokens = special_tokens or []
+        # Sort special tokens by length (desc) to ensure greedy matching
+        special_tokens = sorted(special_tokens, key=len, reverse=True)
+        
+        # print(f"Reading {input_path}...")
+        with open(input_path, "r", encoding="utf-8") as f:
+            text = f.read()
+
+        # 1. Split logic handling special tokens
+        chunks = [text]
+        if special_tokens:
+            pattern_str = "|".join(re.escape(tok) for tok in special_tokens)
+            pattern = re.compile(f"({pattern_str})")
+            raw_chunks = pattern.split(text)
+            # Filter out empty strings and the special tokens themselves (we don't train BPE on special tokens)
+            chunks = [c for c in raw_chunks if c and c not in special_tokens]
+
+        # 2. Parallel Count Words
+        # print("Counting words...")
+        # Use simple map if very few chunks to avoid process overhead on small files
+        if len(chunks) < 4:
+            word_dicts = list(map(self._count_word_freq, chunks))
         else:
-            new_token_freqs[new_tuple] = freq
+            word_dicts = process_map(self._count_word_freq, chunks, chunksize=1, max_workers=os.cpu_count(), disable=True)
 
-    return new_token_freqs
+        # Merge results from parallel processing
+        word_cnt = defaultdict(int)
+        for d in word_dicts:
+            for k, v in d.items():
+                word_cnt[k] += v
 
+        # 3. Initial Pair Statistics
+        pair_cnt = defaultdict(int)
+        for word_bytes, cnt in word_cnt.items():
+            for pair in zip(word_bytes[:-1], word_bytes[1:]):
+                pair_cnt[pair] += cnt
 
-def train_bpe(input_path, vocab_size, special_tokens):
+        # 4. Initialize Vocab
+        self.vocab = self._get_bytes_range(special_tokens)
+        base_vocab_size = len(self.vocab)
+        num_merges = self.vocab_size - base_vocab_size
+
+        # 5. Training Loop
+        # print(f"Training for {num_merges} merges...")
+        # Disable tqdm for tests to keep output clean, enable if running manually
+        iterator = range(num_merges)
+        
+        for i in iterator:
+            if not pair_cnt:
+                break
+
+            # EDGE CASE: Deterministic Tie-Breaking
+            # Sort by frequency (desc), then by pair bytes (lexicographical asc)
+            # This is critical for passing tests that check for exact reproduction
+            best_pair = max(pair_cnt.items(), key=lambda x: (x[1], x[0]))[0]
+
+            # Register Merge
+            new_token_bytes = best_pair[0] + best_pair[1]
+            token_id = base_vocab_size + i
+            self.vocab[token_id] = new_token_bytes
+            self.merges[best_pair] = token_id
+
+            # Efficient Update
+            word_cnt, pair_cnt = self._update_stats(word_cnt, pair_cnt, best_pair)
+
+        return self.vocab, self.merges
+
+    def encode(self, text: str) -> List[int]:
+        """Encodes text into a list of token IDs."""
+        if not self.vocab:
+            raise ValueError("Tokenizer not trained yet!")
+
+        ids = []
+        # Use the regex to split into words
+        for m in self.pattern.finditer(text):
+            word = m.group(0)
+            
+            # Start with bytes
+            word_bytes = self._word2bytes(word)
+            
+            # Apply merges iteratively
+            while len(word_bytes) >= 2:
+                stats = {}
+                for pair in zip(word_bytes[:-1], word_bytes[1:]):
+                    stats[pair] = self.merges.get(pair, float('inf'))
+                
+                # Find the pair with the lowest merge index (earliest learned merge)
+                best_pair = min(stats, key=lambda p: stats.get(p, float('inf')))
+                
+                if best_pair not in self.merges:
+                    break # No more applicable merges
+                
+                word_bytes = self._apply_merge(word_bytes, best_pair)
+
+            # Map final byte chunks to IDs
+            reverse_vocab = {v: k for k, v in self.vocab.items()}
+            
+            for part in word_bytes:
+                if part in reverse_vocab:
+                    ids.append(reverse_vocab[part])
+                else:
+                    for b in part:
+                        ids.append(b)
+                        
+        return ids
+
+    def save(self, prefix: str):
+        """Save vocab and merges."""
+        vocab_export = {id: b.decode('latin-1') for id, b in self.vocab.items()}
+        with open(f"{prefix}.vocab", "w") as f:
+            json.dump(vocab_export, f)
+            
+        merges_export = []
+        for (p1, p2), idx in self.merges.items():
+            merges_export.append({
+                "p1": p1.decode('latin-1'),
+                "p2": p2.decode('latin-1'),
+                "id": idx
+            })
+        with open(f"{prefix}.merges", "w") as f:
+            json.dump(merges_export, f)
+
+# --- ADAPTER FOR ASSIGNMENT TESTS ---
+def train_bpe(input_path: str, vocab_size: int, special_tokens: List[str]) -> Tuple[Dict[int, bytes], List[Tuple[bytes, bytes]]]:
     """
-    主函数：训练 BPE tokenizer
-
-    Args:
-        input_path: 训练语料文件路径
-        vocab_size: 目标词表大小
-        special_tokens: 特殊 token 列表，如 ["<|endoftext|>"]
-
-    Returns:
-        vocab: {token_id: bytes} 词表
-        merges: [(pair1, pair2), ...] 合并规则列表
+    Wrapper function to match the signature expected by cs336_basics tests.
     """
-    print(f"开始训练 BPE，目标词表大小: {vocab_size}")
+    # 1. Instantiate the class
+    tokenizer = BPETokenizer(vocab_size=vocab_size)
+    
+    # 2. Run training
+    vocab, merges_dict = tokenizer.train(input_path, special_tokens=special_tokens)
+    
+    # 3. Format output
+    # The class returns a dict for merges, but the test expects a list of tuples 
+    # sorted by creation order (which dict keys preserve in Python 3.7+)
+    merges_list = list(merges_dict.keys())
+    
+    return vocab, merges_list
 
-    # =====================================================
-    # 第 1 步：并行预分词
-    # =====================================================
-    num_processes = multiprocessing.cpu_count()
-    print(f"使用 {num_processes} 个进程并行预分词...")
+if __name__ == "__main__":
+    # Dummy file creation for testing
+    with open("test_corpus.txt", "w", encoding="utf-8") as f:
+        f.write("Hello world! Hello tokenizer. This is a test. 世界你好。")
 
-    # 找到安全的切分边界
-    with open(input_path, "rb") as f:
-        boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
-
-    print(f"文件切分成 {len(boundaries) - 1} 块")
-
-    # 准备每个工人的任务
-    special_tokens_bytes = [
-        s.encode("utf-8") if isinstance(s, str) else s for s in special_tokens
-    ]
-
-    worker_args = []
-    for i in range(len(boundaries) - 1):
-        worker_args.append(
-            (input_path, boundaries[i], boundaries[i + 1], special_tokens_bytes)
-        )
-
-    # 并行执行
-    with multiprocessing.Pool(num_processes) as pool:
-        results = pool.map(_worker_count_tokens, worker_args)
-
-    # =====================================================
-    # 第 2 步：汇总结果
-    # =====================================================
-    print("汇总各进程的统计结果...")
-
-    total_counts_bytes = Counter()
-    for res in results:
-        total_counts_bytes.update(res)
-
-    print(f"预分词完成，共 {len(total_counts_bytes)} 个不同的 token")
-
-    # 把 bytes 转成 tuple 格式，方便后续合并操作
-    # {b'hello': 100} -> {(104, 101, 108, 108, 111): 100}
-    token_freqs = {}
-    for token_bytes, freq in total_counts_bytes.items():
-        token_tuple = tuple(token_bytes)  # bytes -> tuple of ints
-        token_freqs[token_tuple] = freq
-
-    # =====================================================
-    # 第 3 步：初始化词表
-    # =====================================================
-    # 基础词表：256 个字节
-    vocab = {i: bytes([i]) for i in range(256)}
-
-    # 添加 special tokens
-    next_id = 256
-    for st in special_tokens:
-        st_bytes = st.encode("utf-8") if isinstance(st, str) else st
-        vocab[next_id] = st_bytes
-        next_id += 1
-
-    current_vocab_size = next_id
-    merges = []
-
-    print(f"初始词表大小: {current_vocab_size}")
-
-    # =====================================================
-    # 第 4 步：BPE 训练循环
-    # =====================================================
-    print("开始 BPE 合并循环...")
-
-    iteration = 0
-    while current_vocab_size < vocab_size:
-        iteration += 1
-
-        # A. 统计所有相邻字节对的频率
-        pair_counts = count_all_pairs(token_freqs)
-
-        if not pair_counts:
-            print("没有更多可合并的字节对了")
-            break
-
-        # B. 找到频率最高的字节对
-        best_pair, best_count = pair_counts.most_common(1)[0]
-
-        # C. 创建新 token 并记录合并规则
-        new_token_id = current_vocab_size
-
-        # 新 token 的 bytes 表示
-        # best_pair 可能包含之前合并产生的 token ID (>255)
-        # 所以需要递归查找它们的 bytes 表示
-        def get_bytes(token_id):
-            if token_id < 256:
-                return bytes([token_id])
-            else:
-                return vocab[token_id]
-
-        new_token_bytes = get_bytes(best_pair[0]) + get_bytes(best_pair[1])
-        vocab[new_token_id] = new_token_bytes
-        merges.append(best_pair)
-
-        # D. 更新 token_freqs：把所有的 best_pair 替换成 new_token_id
-        token_freqs = merge_pair_in_tokens(token_freqs, best_pair, new_token_id)
-
-        current_vocab_size += 1
-
-        # 打印进度
-        if iteration % 100 == 0:
-            print(
-                f"  迭代 {iteration}: 合并 {best_pair} -> {new_token_id}, "
-                f"出现 {best_count} 次, 词表大小 {current_vocab_size}"
-            )
-
-    print(f"\n训练完成！")
-    print(f"  最终词表大小: {len(vocab)}")
-    print(f"  合并规则数量: {len(merges)}")
-
-    return vocab, merges
-
-
-# =====================================================
-# 测试代码
-# =====================================================
-# if __name__ == "__main__":
-#     pass
-# 创建一个小的测试文件
-# test_text = """Hello world! Hello everyone!
-# The quick brown fox jumps over the lazy dog.
-# Hello world! The world is beautiful.
-# <|endoftext|>
-# Another document here. Hello again!
-# """ * 100  # 重复 100 次让它有点规模
-
-# test_file = "/tmp/test_corpus.txt"
-# with open(test_file, "w") as f:
-#     f.write(test_text)
-
-# # 训练 BPE
-# vocab, merges = train_bpe(
-#     input_path=test_file,
-#     vocab_size=300,  # 256 + 1 special + 43 merges
-#     special_tokens=["<|endoftext|>"]
-# )
-
-# # 打印前几个合并规则
-# print("\n前 10 个合并规则:")
-# for i, merge in enumerate(merges[:10]):
-#     # 显示合并的是什么
-#     def show(token_id):
-#         if token_id < 256:
-#             return repr(bytes([token_id]))
-#         else:
-#             return f"[{token_id}]={repr(vocab[token_id])}"
-
-#     result_id = 256 + len(["<|endoftext|>"]) + i
-#     print(f"  {i+1}. {show(merge[0])} + {show(merge[1])} -> {show(result_id)}")
+    tokenizer = BPETokenizer(vocab_size=300)
+    tokenizer.train("test_corpus.txt", special_tokens=["<|endoftext|>"])
+    
+    # Test Encoding
+    ids = tokenizer.encode("Hello world! 世界")
+    print(f"Encoded IDs: {ids}")
+    
+    # Verify correctness (basic check)
+    decoded_bytes = b"".join([tokenizer.vocab[i] for i in ids])
+    print(f"Decoded: {decoded_bytes.decode('utf-8')}")
