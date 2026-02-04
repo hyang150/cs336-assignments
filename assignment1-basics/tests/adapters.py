@@ -9,6 +9,15 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
+# =======================================================================
+# 全局导入逻辑
+# 在这里尝试一次性导入你的模块。如果导入失败，student_nn 就是 None
+# =======================================================================
+try:
+    import cs336_basics.nn as student_nn
+except ImportError:
+    student_nn = None
+
 
 def run_linear(
     d_in: int,
@@ -28,8 +37,12 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
-
-    raise NotImplementedError
+    # 检查模块是否成功导入，以及函数是否存在
+    if student_nn is None or not hasattr(student_nn, "run_linear"):
+        raise NotImplementedError("run_linear not found in cs336_basics.nn")
+    
+    # 调用你的实现
+    return student_nn.run_linear(d_in, d_out, weights, in_features)
 
 
 def run_embedding(
@@ -50,7 +63,9 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
+    # 如果你也实现了 run_embedding，可以在这里取消注释并改为调用你的函数
+    # if student_nn and hasattr(student_nn, "run_embedding"):
+    #     return student_nn.run_embedding(vocab_size, d_model, weights, token_ids)
     raise NotImplementedError
 
 
@@ -378,7 +393,9 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_rmsnorm"):
+        raise NotImplementedError("run_rmsnorm not found in cs336_basics.nn")
+    return student_nn.run_rmsnorm(d_model, eps, weights, in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -392,7 +409,9 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_silu"):
+        raise NotImplementedError("run_silu not found in cs336_basics.nn")
+    return student_nn.run_silu(in_features)
 
 
 def run_get_batch(
@@ -431,7 +450,9 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_softmax"):
+        raise NotImplementedError("run_softmax not found in cs336_basics.nn")
+    return student_nn.run_softmax(in_features, dim)
 
 
 def run_cross_entropy(
@@ -449,7 +470,9 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_cross_entropy"):
+        raise NotImplementedError("run_cross_entropy not found in cs336_basics.nn")
+    return student_nn.run_cross_entropy(inputs, targets)
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
@@ -461,7 +484,9 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_gradient_clipping"):
+        raise NotImplementedError("run_gradient_clipping not found in cs336_basics.nn")
+    return student_nn.run_gradient_clipping(parameters, max_l2_norm)
 
 
 def get_adamw_cls() -> Any:
@@ -589,5 +614,9 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    from cs336_basics.tokenizer import train_bpe  # 导入你的实现
-    return train_bpe(str(input_path), vocab_size, special_tokens)
+    # 这里示例调用，如果你有 tokenizer.py 的话
+    try:
+        from cs336_basics.tokenizer import train_bpe
+        return train_bpe(str(input_path), vocab_size, special_tokens)
+    except ImportError:
+        raise NotImplementedError("train_bpe not found")
