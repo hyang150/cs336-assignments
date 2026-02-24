@@ -8,8 +8,15 @@ def find_chunk_boundaries(
     split_special_token: bytes,
 ) -> list[int]:
     """
-    Chunk the file into parts that can be counted independently.
+     Chunk the file into parts that can be counted independently.
     May return fewer chunks if the boundaries end up overlapping.
+    Find safe boundaries to split a large file into chunks for parallel processing.
+    
+    The goal is to ensure we do not split in the middle of a special token (e.g., <|endoftext|>).
+    If a naive boundary falls inside a special token, we shift it to after the token.
+    
+    Returns:
+        A list of byte offsets representing the start/end of chunks.
     """
     assert isinstance(split_special_token, bytes), "Must represent special token as a bytestring"
 

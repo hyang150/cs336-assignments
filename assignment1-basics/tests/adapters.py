@@ -63,10 +63,9 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-    # 如果你也实现了 run_embedding，可以在这里取消注释并改为调用你的函数
-    # if student_nn and hasattr(student_nn, "run_embedding"):
-    #     return student_nn.run_embedding(vocab_size, d_model, weights, token_ids)
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_embedding"):
+        raise NotImplementedError("run_embedding not found in cs336_basics.nn")
+    return student_nn.run_embedding(vocab_size, d_model, weights, token_ids)
 
 
 def run_swiglu(
@@ -98,7 +97,9 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_swiglu"):
+        raise NotImplementedError("run_swiglu not found in cs336_basics.nn")
+    return student_nn.run_swiglu(d_model, d_ff, w1_weight, w2_weight, w3_weight, in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -119,7 +120,9 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_scaled_dot_product_attention"):
+        raise NotImplementedError("run_scaled_dot_product_attention not found in cs336_basics.nn")
+    return student_nn.run_scaled_dot_product_attention(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
@@ -153,7 +156,11 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_multihead_self_attention"):
+        raise NotImplementedError("run_multihead_self_attention not found in cs336_basics.nn")
+    return student_nn.run_multihead_self_attention(
+        d_model, num_heads, q_proj_weight, k_proj_weight, v_proj_weight, o_proj_weight, in_features
+    )
 
 
 def run_multihead_self_attention_with_rope(
@@ -193,7 +200,20 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_multihead_self_attention_with_rope"):
+        raise NotImplementedError("run_multihead_self_attention_with_rope not found in cs336_basics.nn")
+    return student_nn.run_multihead_self_attention_with_rope(
+        d_model,
+        num_heads,
+        max_seq_len,
+        theta,
+        q_proj_weight,
+        k_proj_weight,
+        v_proj_weight,
+        o_proj_weight,
+        in_features,
+        token_positions,
+    )
 
 
 def run_rope(
@@ -215,7 +235,9 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_rope"):
+        raise NotImplementedError("run_rope not found in cs336_basics.nn")
+    return student_nn.run_rope(d_k, theta, max_seq_len, in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -288,7 +310,11 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_transformer_block"):
+        raise NotImplementedError("run_transformer_block not found in cs336_basics.nn")
+    return student_nn.run_transformer_block(
+        d_model, num_heads, d_ff, max_seq_len, theta, weights, in_features
+    )
 
 
 def run_transformer_lm(
@@ -370,7 +396,11 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    if student_nn is None or not hasattr(student_nn, "run_transformer_lm"):
+        raise NotImplementedError("run_transformer_lm not found in cs336_basics.nn")
+    return student_nn.run_transformer_lm(
+        vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta, weights, in_indices
+    )
 
 
 def run_rmsnorm(
@@ -434,7 +464,9 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    from cs336_basics.data import get_batch
+
+    return get_batch(dataset, batch_size, context_length, device)
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
@@ -493,7 +525,9 @@ def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    from cs336_basics.optimizer import AdamW
+
+    return AdamW
 
 
 def run_get_lr_cosine_schedule(
@@ -521,7 +555,15 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    from cs336_basics.optimizer import get_lr_cosine_schedule
+
+    return get_lr_cosine_schedule(
+        it=it,
+        max_learning_rate=max_learning_rate,
+        min_learning_rate=min_learning_rate,
+        warmup_iters=warmup_iters,
+        cosine_cycle_iters=cosine_cycle_iters,
+    )
 
 
 def run_save_checkpoint(
@@ -540,7 +582,9 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    from cs336_basics.training import save_checkpoint
+
+    return save_checkpoint(model, optimizer, iteration, out)
 
 
 def run_load_checkpoint(
@@ -561,7 +605,9 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    from cs336_basics.training import load_checkpoint
+
+    return load_checkpoint(src, model, optimizer)
 
 
 def get_tokenizer(
@@ -584,7 +630,9 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    from cs336_basics.tokenizer import get_tokenizer as _get_tokenizer
+
+    return _get_tokenizer(vocab, merges, special_tokens)
 
 
 def run_train_bpe(

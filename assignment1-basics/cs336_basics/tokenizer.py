@@ -2,13 +2,101 @@ import regex as re
 import json
 import os
 from collections import defaultdict
-from typing import List, Tuple, Dict, Optional, Union
-from tqdm.contrib.concurrent import process_map
-from tqdm import tqdm
+from typing import List, Tuple, Dict, Union, Iterable, Iterator
 
 # GPT-4 / GPT-2 standard split pattern
 # This regex splits text into: contractions, letters, numbers, or anything else (punctuation)
 PAT = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+
+
+class BPEInferenceTokenizer:
+    """Tokenizer for encoding/decoding with fixed vocab and merges."""
+
+    def __init__(
+        self,
+        vocab: Dict[int, bytes],
+        merges: List[Tuple[bytes, bytes]],
+        special_tokens: List[str] | None = None,
+    ):
+        self.vocab = dict(vocab)
+        self.id_to_token = dict(vocab)
+        self.token_to_id = {v: k for k, v in vocab.items()}
+        self.merge_ranks = {pair: i for i, pair in enumerate(merges)}
+        self.pattern = PAT
+        self.special_tokens = special_tokens or []
+        self.special_token_to_id = {}
+        for token in self.special_tokens:
+            token_bytes = token.encode("utf-8")
+            if token_bytes in self.token_to_id:
+                self.special_token_to_id[token] = self.token_to_id[token_bytes]
+        self._special_pattern = None
+        if self.special_tokens:
+            # Longest-first keeps overlapping special tokens greedy.
+            sorted_specials = sorted(self.special_tokens, key=len, reverse=True)
+            self._special_pattern = re.compile("(" + "|".join(re.escape(t) for t in sorted_specials) + ")")
+
+    @staticmethod
+    def _apply_single_merge(parts: List[bytes], pair: Tuple[bytes, bytes]) -> List[bytes]:
+        merged = []
+        i = 0
+        new_token = pair[0] + pair[1]
+        while i < len(parts):
+            if i + 1 < len(parts) and parts[i] == pair[0] and parts[i + 1] == pair[1]:
+                merged.append(new_token)
+                i += 2
+            else:
+                merged.append(parts[i])
+                i += 1
+        return merged
+
+    def _bpe(self, token_bytes: bytes) -> List[bytes]:
+        parts = [bytes([b]) for b in token_bytes]
+        while len(parts) >= 2:
+            pairs = list(zip(parts[:-1], parts[1:]))
+            ranked = [(self.merge_ranks[p], p) for p in pairs if p in self.merge_ranks]
+            if not ranked:
+                break
+            _, best_pair = min(ranked, key=lambda x: x[0])
+            parts = self._apply_single_merge(parts, best_pair)
+        return parts
+
+    def _encode_ordinary(self, text: str) -> List[int]:
+        ids: List[int] = []
+        for m in self.pattern.finditer(text):
+            word_bytes = m.group(0).encode("utf-8")
+            for piece in self._bpe(word_bytes):
+                token_id = self.token_to_id.get(piece)
+                if token_id is not None:
+                    ids.append(token_id)
+                else:
+                    # Fallback to raw bytes (always representable in GPT-like vocabs).
+                    ids.extend(self.token_to_id[bytes([b])] for b in piece)
+        return ids
+
+    def encode(self, text: str) -> List[int]:
+        if not self.special_tokens:
+            return self._encode_ordinary(text)
+
+        assert self._special_pattern is not None
+        parts = self._special_pattern.split(text)
+        ids: List[int] = []
+        for part in parts:
+            if not part:
+                continue
+            if part in self.special_token_to_id:
+                ids.append(self.special_token_to_id[part])
+            else:
+                ids.extend(self._encode_ordinary(part))
+        return ids
+
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        for chunk in iterable:
+            for token_id in self.encode(chunk):
+                yield token_id
+
+    def decode(self, ids: List[int]) -> str:
+        bs = b"".join(self.id_to_token[i] for i in ids)
+        return bs.decode("utf-8", errors="replace")
 
 class BPETokenizer:
     def __init__(self, vocab_size: int = 5000):
@@ -124,13 +212,10 @@ class BPETokenizer:
             # Filter out empty strings and the special tokens themselves (we don't train BPE on special tokens)
             chunks = [c for c in raw_chunks if c and c not in special_tokens]
 
-        # 2. Parallel Count Words
-        # print("Counting words...")
-        # Use simple map if very few chunks to avoid process overhead on small files
-        if len(chunks) < 4:
-            word_dicts = list(map(self._count_word_freq, chunks))
-        else:
-            word_dicts = process_map(self._count_word_freq, chunks, chunksize=1, max_workers=os.cpu_count(), disable=True)
+        # 2. Count word frequencies.
+        # Avoid multiprocessing here for broader compatibility in restricted
+        # environments (e.g., CI sandboxes without shared-memory semaphores).
+        word_dicts = list(map(self._count_word_freq, chunks))
 
         # Merge results from parallel processing
         word_cnt = defaultdict(int)
@@ -246,6 +331,14 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: List[str]) -> Tu
     merges_list = list(merges_dict.keys())
     
     return vocab, merges_list
+
+
+def get_tokenizer(
+    vocab: Dict[int, bytes],
+    merges: List[Tuple[bytes, bytes]],
+    special_tokens: List[str] | None = None,
+) -> BPEInferenceTokenizer:
+    return BPEInferenceTokenizer(vocab=vocab, merges=merges, special_tokens=special_tokens)
 
 if __name__ == "__main__":
     # Dummy file creation for testing

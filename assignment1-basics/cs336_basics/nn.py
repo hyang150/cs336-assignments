@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 from torch import Tensor
-from typing import Iterable, Any
+from typing import Iterable
 from jaxtyping import Float, Int
 
 # ==========================================
@@ -117,6 +117,226 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
     SiLU (Swish) = x * sigmoid(x)
     """
     return in_features * torch.sigmoid(in_features)
+
+
+def run_embedding(
+    vocab_size: int,
+    d_model: int,
+    weights: Float[Tensor, " vocab_size d_model"],
+    token_ids: Int[Tensor, " ..."],
+) -> Float[Tensor, " ... d_model"]:
+    del vocab_size, d_model
+    return weights[token_ids]
+
+
+def run_swiglu(
+    d_model: int,
+    d_ff: int,
+    w1_weight: Float[Tensor, " d_ff d_model"],
+    w2_weight: Float[Tensor, " d_model d_ff"],
+    w3_weight: Float[Tensor, " d_ff d_model"],
+    in_features: Float[Tensor, " ... d_model"],
+) -> Float[Tensor, " ... d_model"]:
+    del d_model, d_ff
+    x1 = in_features @ w1_weight.T
+    x3 = in_features @ w3_weight.T
+    hidden = run_silu(x1) * x3
+    return hidden @ w2_weight.T
+
+
+def run_scaled_dot_product_attention(
+    Q: Float[Tensor, " ... queries d_k"],
+    K: Float[Tensor, " ... keys d_k"],
+    V: Float[Tensor, " ... values d_v"],
+    mask: Int[Tensor, " ... queries keys"] | None = None,
+) -> Float[Tensor, " ... queries d_v"]:
+    d_k = Q.shape[-1]
+    scores = (Q @ K.transpose(-2, -1)) / torch.sqrt(torch.tensor(d_k, dtype=Q.dtype, device=Q.device))
+    if mask is not None:
+        scores = scores.masked_fill(~mask.bool(), float("-inf"))
+    probs = run_softmax(scores, dim=-1)
+    return probs @ V
+
+
+def _causal_mask(seq_len: int, device: torch.device) -> Tensor:
+    return torch.tril(torch.ones((seq_len, seq_len), dtype=torch.bool, device=device))
+
+
+def run_rope(
+    d_k: int,
+    theta: float,
+    max_seq_len: int,
+    in_query_or_key: Float[Tensor, " ... sequence_length d_k"],
+    token_positions: Int[Tensor, " ... sequence_length"],
+) -> Float[Tensor, " ... sequence_length d_k"]:
+    del max_seq_len
+    if d_k % 2 != 0:
+        raise ValueError(f"RoPE requires even d_k, got {d_k}.")
+
+    half = d_k // 2
+    i = torch.arange(half, device=in_query_or_key.device, dtype=in_query_or_key.dtype)
+    inv_freq = 1.0 / (theta ** (2.0 * i / d_k))
+
+    pos = token_positions.to(in_query_or_key.device).to(in_query_or_key.dtype)
+    angles = pos[..., None] * inv_freq
+    cos = torch.cos(angles)
+    sin = torch.sin(angles)
+
+    x_even = in_query_or_key[..., 0::2]
+    x_odd = in_query_or_key[..., 1::2]
+    out_even = x_even * cos - x_odd * sin
+    out_odd = x_even * sin + x_odd * cos
+
+    out = torch.empty_like(in_query_or_key)
+    out[..., 0::2] = out_even
+    out[..., 1::2] = out_odd
+    return out
+
+
+def run_multihead_self_attention(
+    d_model: int,
+    num_heads: int,
+    q_proj_weight: Float[Tensor, " d_k d_in"],
+    k_proj_weight: Float[Tensor, " d_k d_in"],
+    v_proj_weight: Float[Tensor, " d_v d_in"],
+    o_proj_weight: Float[Tensor, " d_model d_v"],
+    in_features: Float[Tensor, " ... sequence_length d_in"],
+) -> Float[Tensor, " ... sequence_length d_out"]:
+    d_head = d_model // num_heads
+    seq_len = in_features.shape[-2]
+
+    q = in_features @ q_proj_weight.T
+    k = in_features @ k_proj_weight.T
+    v = in_features @ v_proj_weight.T
+
+    q = q.reshape(*q.shape[:-1], num_heads, d_head).transpose(-3, -2)
+    k = k.reshape(*k.shape[:-1], num_heads, d_head).transpose(-3, -2)
+    v = v.reshape(*v.shape[:-1], num_heads, d_head).transpose(-3, -2)
+
+    mask = _causal_mask(seq_len, in_features.device)
+    attn = run_scaled_dot_product_attention(q, k, v, mask=mask)
+    attn = attn.transpose(-3, -2).reshape(*in_features.shape[:-1], d_model)
+    return attn @ o_proj_weight.T
+
+
+def run_multihead_self_attention_with_rope(
+    d_model: int,
+    num_heads: int,
+    max_seq_len: int,
+    theta: float,
+    q_proj_weight: Float[Tensor, " d_k d_in"],
+    k_proj_weight: Float[Tensor, " d_k d_in"],
+    v_proj_weight: Float[Tensor, " d_v d_in"],
+    o_proj_weight: Float[Tensor, " d_model d_v"],
+    in_features: Float[Tensor, " ... sequence_length d_in"],
+    token_positions: Int[Tensor, " ... sequence_length"] | None = None,
+) -> Float[Tensor, " ... sequence_length d_out"]:
+    d_head = d_model // num_heads
+    seq_len = in_features.shape[-2]
+
+    q = in_features @ q_proj_weight.T
+    k = in_features @ k_proj_weight.T
+    v = in_features @ v_proj_weight.T
+
+    q = q.reshape(*q.shape[:-1], num_heads, d_head).transpose(-3, -2)
+    k = k.reshape(*k.shape[:-1], num_heads, d_head).transpose(-3, -2)
+    v = v.reshape(*v.shape[:-1], num_heads, d_head).transpose(-3, -2)
+
+    if token_positions is None:
+        token_positions = torch.arange(seq_len, device=in_features.device)
+    if token_positions.ndim == 1:
+        token_positions = token_positions.unsqueeze(0)
+
+    while token_positions.ndim < q.ndim - 1:
+        token_positions = token_positions.unsqueeze(1)
+    token_positions = token_positions.expand(*q.shape[:-1])
+
+    q = run_rope(d_head, theta, max_seq_len, q, token_positions)
+    k = run_rope(d_head, theta, max_seq_len, k, token_positions)
+
+    mask = _causal_mask(seq_len, in_features.device)
+    attn = run_scaled_dot_product_attention(q, k, v, mask=mask)
+    attn = attn.transpose(-3, -2).reshape(*in_features.shape[:-1], d_model)
+    return attn @ o_proj_weight.T
+
+
+def run_transformer_block(
+    d_model: int,
+    num_heads: int,
+    d_ff: int,
+    max_seq_len: int,
+    theta: float,
+    weights: dict[str, Tensor],
+    in_features: Float[Tensor, " batch sequence_length d_model"],
+) -> Float[Tensor, " batch sequence_length d_model"]:
+    h = in_features
+    attn_in = run_rmsnorm(d_model, 1e-5, weights["ln1.weight"], h)
+    attn_out = run_multihead_self_attention_with_rope(
+        d_model=d_model,
+        num_heads=num_heads,
+        max_seq_len=max_seq_len,
+        theta=theta,
+        q_proj_weight=weights["attn.q_proj.weight"],
+        k_proj_weight=weights["attn.k_proj.weight"],
+        v_proj_weight=weights["attn.v_proj.weight"],
+        o_proj_weight=weights["attn.output_proj.weight"],
+        in_features=attn_in,
+    )
+    h = h + attn_out
+
+    ffn_in = run_rmsnorm(d_model, 1e-5, weights["ln2.weight"], h)
+    ffn_out = run_swiglu(
+        d_model=d_model,
+        d_ff=d_ff,
+        w1_weight=weights["ffn.w1.weight"],
+        w2_weight=weights["ffn.w2.weight"],
+        w3_weight=weights["ffn.w3.weight"],
+        in_features=ffn_in,
+    )
+    return h + ffn_out
+
+
+def run_transformer_lm(
+    vocab_size: int,
+    context_length: int,
+    d_model: int,
+    num_layers: int,
+    num_heads: int,
+    d_ff: int,
+    rope_theta: float,
+    weights: dict[str, Tensor],
+    in_indices: Int[Tensor, " batch_size sequence_length"],
+) -> Float[Tensor, " batch_size sequence_length vocab_size"]:
+    del vocab_size
+    h = run_embedding(
+        vocab_size=weights["token_embeddings.weight"].shape[0],
+        d_model=d_model,
+        weights=weights["token_embeddings.weight"],
+        token_ids=in_indices,
+    )
+    for layer_idx in range(num_layers):
+        layer_weights = {
+            "attn.q_proj.weight": weights[f"layers.{layer_idx}.attn.q_proj.weight"],
+            "attn.k_proj.weight": weights[f"layers.{layer_idx}.attn.k_proj.weight"],
+            "attn.v_proj.weight": weights[f"layers.{layer_idx}.attn.v_proj.weight"],
+            "attn.output_proj.weight": weights[f"layers.{layer_idx}.attn.output_proj.weight"],
+            "ln1.weight": weights[f"layers.{layer_idx}.ln1.weight"],
+            "ffn.w1.weight": weights[f"layers.{layer_idx}.ffn.w1.weight"],
+            "ffn.w2.weight": weights[f"layers.{layer_idx}.ffn.w2.weight"],
+            "ffn.w3.weight": weights[f"layers.{layer_idx}.ffn.w3.weight"],
+            "ln2.weight": weights[f"layers.{layer_idx}.ln2.weight"],
+        }
+        h = run_transformer_block(
+            d_model=d_model,
+            num_heads=num_heads,
+            d_ff=d_ff,
+            max_seq_len=context_length,
+            theta=rope_theta,
+            weights=layer_weights,
+            in_features=h,
+        )
+    h = run_rmsnorm(d_model, 1e-5, weights["ln_final.weight"], h)
+    return h @ weights["lm_head.weight"].T
 
 def run_rmsnorm(
     d_model: int,
