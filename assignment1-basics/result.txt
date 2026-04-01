@@ -1,0 +1,108 @@
+模型已加载: step=38700, params=22,696,448 (22.7M)
+
+============================================================
+Perplexity 评估
+============================================================
+  Avg Loss:    1.3603
+  Perplexity:  3.90
+  Tokens:      819,200
+  Batches:     100
+
+  📊 课程目标参考:
+     TinyStories val loss ≤ 1.45 → 你的: 1.3603
+     ✅ 达标!
+
+============================================================
+文本生成
+============================================================
+
+--- Sample 1 | prompt: "Once upon a time" ---
+    (temperature=0.8, top_p=0.95)
+Once upon a time, there was a little boy named Tim. Tim loved to play with his toy top. He would spin it around and around. He would spin it so fast and then again again. Tim played with his top all day long.
+One day, Tim met a new friend named Sue. Sue saw Tim spinning his top and said, "Can I play with your top, please?" Tim smiled and said, "Yes, you can play with my top. We can spin it together!" So, Tim and Sue took turns spinning the top and had lots of fun.
+After playing for a while, Tim felt cold. He let out a big sigh. His mom saw him and said, "Oh no, it's time for you to go home." Tim didn't want to leave, but he knew his mom was right. So, he said goodbye and went to his house. Tim's mom gave him a warm hug and put him back in his bed. Tim knew he had a great day with his toy top, and he couldn't wait to play with it again tomorrow.
+<|endoftext|>
+
+
+--- Sample 1 | prompt: "The little girl" ---
+    (temperature=0.8, top_p=0.95)
+The little girl was very excited to go on an adventure. She put on her hat and went outside. The sun was shining, and the birds were singing.
+The little girl jumped and jumped, and laughed. She saw many pretty things and wanted to explore. She skipped through the grass and the flowers. She came to a big field, and she saw a huge, green field.
+The little girl was so excited. She ran and skipped through the field. She laughed and laughed as she ran. Then, she felt tired.
+The little girl looked around and saw a nice, soft spot. She was so happy. She skipped around the field with the soft grass and the soft grass.
+The little girl felt so happy and so much joy. She decided to keep hopping and hopping around the field. It was the best day ever!
+<|endoftext|>
+
+
+--- Sample 1 | prompt: "One day, a boy named" ---
+    (temperature=0.8, top_p=0.95)
+One day, a boy named Tim went to the park with his mom. They saw a big tree with lots of leaves. Tim wanted to play on the leaves, but his mom said, "No, Tim. The leaves are for a year."
+Tim was sad, but he listened to his mom. They went home and Tim had a dream about a big, colorful bird. In the dream, the bird flew away and came back with a big, colorful egg. Tim was very happy and said, "Thank you, bird!"
+The next day, Tim and his mom went back to the park. They saw the big, colorful bird again. This time, the bird was nice and wanted to play. Tim and his mom played with the bird all day. They had lots of fun, and Tim knew that his dream came true.
+<|endoftext|>
+
+
+--- Sample 2 | prompt: "Once upon a time" ---
+    (temperature=0.8, top_p=0.95)
+Once upon a time, in a small house, there lived a little boy named Tim. Tim had a toy fork that he loved to play with. One day, the toy fork broke into two pieces. Tim was sad and wanted to fix it.
+Tim's mom saw him crying and asked, "What's wrong, Tim?" Tim showed her the broken fork. His mom had an idea. She said, "Let's replace the broken toy fork with a new one!"
+Tim and his mom went to the store to find the new fork. They found a nice one and Tim was happy. He thanked his mom and they went back to playing. Tim learned that when he was sad, he could fix things with his mom by being patient.
+<|endoftext|>
+
+
+--- Sample 2 | prompt: "The little girl" ---
+    (temperature=0.8, top_p=0.95)
+The little girl was so happy. She could finally have her toy back, but she also knew to be careful. She never climbed a tall tree again.
+<|endoftext|>
+
+
+--- Sample 2 | prompt: "One day, a boy named" ---
+    (temperature=0.8, top_p=0.95)
+One day, a boy named Tim went to a farm. He saw a mysterious big barrel. Tim was very curious. He wanted to see what was inside. He decided to poke it.
+When Tim poked the barrel, it opened up. Inside, there were lots of fun toys for him to play with. Tim was very happy. He played with the toys all day long.
+At the end of the day, Tim took the toys out of the barrel and put them back in the sun. He knew that his mysterious barrel was a special place where he could play with his toys every day. And they all lived happily ever after.
+<|endoftext|>
+
+
+--- Sample 3 | prompt: "Once upon a time" ---
+    (temperature=0.8, top_p=0.95)
+Once upon a time, there was a curious little girl named Mia. She loved to explore and find new things. One day, Mia went for a walk in the woods. She saw a big, round melon. Mia was very happy and picked it up.
+Mia thought it was a magic melon. She wanted to see if it could do something special. So, Mia took a big bite of the melon. Suddenly, she started to grow very fast! Mia was so surprised.
+The melon started to grow and grow. It became so big that it filled the whole woods. Mia looked inside the melon and saw it was now a tiny house. Mia and her mom went inside the house. They saw a big surprise. The melon was now a tiny house with a little girl inside. Mia's mom had been hiding there the whole day. They had a fun and happy day.
+<|endoftext|>
+
+
+--- Sample 3 | prompt: "The little girl" ---
+    (temperature=0.8, top_p=0.95)
+The little girl wanted to join her friends. She went to the playground and saw her friends playing. She asked them if they wanted to join in. They said yes, and so they all played together. 
+The little girl had lots of fun. She ran around, played with her friends, and they made funny faces. They laughed and laughed and played. 
+At the end of the day, the little girl was so happy she had made new friends. They all hugged, and they all went home with big smiles on their faces. 
+<|endoftext|>
+
+
+--- Sample 3 | prompt: "One day, a boy named" ---
+    (temperature=0.8, top_p=0.95)
+One day, a boy named Tim found a big stick. He thought it was a weapon, so he was ready to play with it. Tim saw his friend, Sam, and asked, "What is that?" Sam replied, "It's a stick. I use it to play."
+Tim wanted to play with the stick, but Sam wanted to play with it too. They started to argue about who could play with the stick first. Tim said, "I want to play with the stick first, and you can play with it."
+They both got mad at each other. Then, a big wind came and blew the stick away. Tim and Sam were sad. They looked for the stick, but it was gone. They were both very sad. They did not find the stick, and they did not play together anymore.
+<|endoftext|>
+
+
+============================================================
+Temperature 对比 (同一 prompt)
+============================================================
+
+--- temperature=0.3 ---
+Once upon a time, there was a little girl named Lily. She had a big, red ball. Lily loved to play with her ball every day. One day, she saw a big, open space in her yard. She thought it would be fun to play there.
+Lily kicked her ball high into the sky. It went up, up, up, and then came back down. It was a big, round ball! Lily was so happy to see it. She kicked it again and again. The ball went up, up, up into the sky.
+But then, something unexpected happened. The ball did not come back down. It was
+
+--- temperature=0.8 ---
+Once upon a time, there was a big, heavy box. It was so big that all the kids wanted to see what was inside. One day, a little girl named Sue found the box in her room. She was very excited to see what was inside.
+Sue opened the box and saw many toys. She took out a toy and started to play with it. She would throw it up and then repeat, "Robot, where are you?" as she played with the toy, but then she found that the other toys were hiding inside the heavy box. Sue thought that maybe the other toys were hiding in the box.
+Sue opened the box
+
+--- temperature=1.2 ---
+Once upon a time, in a big field, there was a dizzy rabbit. The careless rabbit loved to play and win all day. Every day, at winter, the snow fell on him and made him very warm.
+One day, while the rabbit was running near the edge of the grassy meadow, he met a friendly squirrel. The squirrel asked, "Hello, my friend. Do you want to play with me?" The rabbit said, "Yes, I like to play in winter."
+They played in the snow and snow until it was time for the careless rabbit to go home. So, the rabbit and the squirrel hugged and said goodbye. From
